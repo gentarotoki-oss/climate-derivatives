@@ -330,25 +330,36 @@ def simulate_temperature_paths(
     n_paths: int = 1000,
     T_initial: float | None = None,
     seed: int | None = None,
+    lambda_risk: float = 0.0,
 ) -> NDArray[np.float64]:
     """
     Euler-Maruyama法で気温パスをシミュレートする。
 
+    == 季節成分の傾き dθ/dt ==
+
+    推定したモデルは「残差 X = T - θ(t) が OU過程に従う」というもの:
+      dX = -κX dt + σ dW
+
+    T = θ(t) + X なので、気温そのもののSDEは
+      dT = dθ(t) + κ(θ(t) - T) dt + σ dW
+
+    となる (Dornier & Queruel, 2000)。dθ の項を落とすと、季節成分が
+    動いている時期 (春・秋) に気温の平均が θ(t) より約 θ'(t)/κ 遅れ、
+    HDD/CDD の期待値がずれる。
+
     == Euler-Maruyama法 ==
 
-    連続時間の SDE:
-      dT = κ(θ(t) - T) dt + σ dW
+    残差 X を離散化して θ を足し戻す:
+      X_{n+1} = X_n + (-κX_n - λσ)Δt + σ√(Δt) Z_n
+      T_{n+1} = θ(t_{n+1}) + X_{n+1}
 
-    を離散化:
-      T_{n+1} = T_n + κ(θ(t_n) - T_n)Δt + σ√(Δt) Z_n
+    これは T の式で書くと
+      T_{n+1} = T_n + [θ(t_{n+1}) - θ(t_n)] + [κ(θ(t_n) - T_n) - λσ]Δt + σ√(Δt) Z_n
 
-    ここで Z_n ~ N(0,1) は標準正規乱数。
+    と同じで、θ の増分が dθ の項にあたる。ここで Z_n ~ N(0,1) は標準正規乱数。
 
-    Δt = 1日 の場合、各ステップで:
-    1. 季節成分 θ(t_n) を計算
-    2. ドリフト項: κ(θ - T) × 1 → 平均に引き戻す力
-    3. 拡散項: σ × Z → ランダムなショック
-    4. T を更新
+    λ (Market Price of Risk) を与えると、Q測度下のパスになる
+    (詳細は app.models.pricing を参照)。
 
     Parameters
     ----------
@@ -366,6 +377,8 @@ def simulate_temperature_paths(
         初期気温。Noneの場合は季節成分の値を使用。
     seed : int or None
         乱数シード（再現性のため）
+    lambda_risk : float
+        Market Price of Risk。0なら実測度 P のパス。
 
     Returns
     -------
@@ -397,8 +410,9 @@ def simulate_temperature_paths(
     sigma = ou.sigma
 
     for i in range(n_days - 1):
-        drift = kappa * (theta[i] - paths[:, i]) * dt
+        seasonal_step = theta[i + 1] - theta[i]  # dθ の項
+        drift = (kappa * (theta[i] - paths[:, i]) - lambda_risk * sigma) * dt
         diffusion = sigma * np.sqrt(dt) * Z[:, i]
-        paths[:, i + 1] = paths[:, i] + drift + diffusion
+        paths[:, i + 1] = paths[:, i] + seasonal_step + drift + diffusion
 
     return paths

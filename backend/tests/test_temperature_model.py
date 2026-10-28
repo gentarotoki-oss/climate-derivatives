@@ -168,6 +168,47 @@ class TestSimulation:
         rmse = np.sqrt(np.mean((path_mean[180:] - theta[180:])**2))
         assert rmse < 1.0, f"RMSE = {rmse:.2f} — 平均が季節成分に収束していない"
 
+    def test_mean_tracks_seasonal_without_lag(self):
+        """
+        平均パスは季節成分 θ(t) に遅れずについて行くはず。
+
+        dθ の項がないと、平均は θ(t) より約 θ'(t)/κ 遅れる。
+        この設定では θ' の最大値が 10·2π/365 ≈ 0.17 °C/日 なので、
+        遅れは最大 0.7 °C ほどになる。
+        """
+        seasonal = SeasonalParams(a=12.0, b=0.0, c1=0.0, d1=-10.0, c2=0.0, d2=0.0)
+        ou = OUParams(kappa=0.25, sigma=2.5)
+
+        paths = simulate_temperature_paths(
+            seasonal=seasonal, ou=ou,
+            t_start=0.0, n_days=365, n_paths=20000, seed=42,
+        )
+
+        theta = seasonal.evaluate(np.arange(0.0, 365.0))
+        max_err = np.max(np.abs(np.mean(paths, axis=0) - theta))
+        assert max_err < 0.2, f"max |E[T] - θ| = {max_err:.2f} — 平均が季節成分から遅れている"
+
+    def test_lambda_shifts_mean_by_lambda_sigma_over_kappa(self):
+        """
+        Q測度下では、残差の平均が -λσ/κ に収束する。
+        平均パスは θ(t) - λσ/κ について行くはず。
+        """
+        seasonal = SeasonalParams(a=12.0, b=0.0, c1=0.0, d1=-10.0, c2=0.0, d2=0.0)
+        ou = OUParams(kappa=0.25, sigma=2.5)
+        lam = 0.2
+
+        paths = simulate_temperature_paths(
+            seasonal=seasonal, ou=ou,
+            t_start=0.0, n_days=365, n_paths=20000, seed=42,
+            lambda_risk=lam,
+        )
+
+        theta = seasonal.evaluate(np.arange(0.0, 365.0))
+        expected_shift = -lam * ou.sigma / ou.kappa  # = -2.0 °C
+        # 初期値の影響が消えた後半で確認
+        shift = np.mean(paths[:, 180:], axis=0) - theta[180:]
+        assert np.max(np.abs(shift - expected_shift)) < 0.2
+
     def test_variance_matches_theory(self):
         """
         定常状態でのシミュレーション分散が理論値 σ²/(2κ) に近いか。

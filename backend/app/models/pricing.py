@@ -40,6 +40,7 @@ from app.models.temperature import (
     SeasonalParams,
     OUParams,
     TemperatureModelResult,
+    simulate_temperature_paths,
 )
 from app.services.degree_days import DEFAULT_BASE_TEMP_C
 
@@ -186,18 +187,18 @@ def monte_carlo_pricing(
     == Q測度下でのシミュレーション ==
 
     P測度（実世界）での OU過程:
-      dT = κ(θ(t) - T)dt + σdW^P
+      dT = dθ(t) + κ(θ(t) - T)dt + σdW^P
 
     Q測度（リスク中立）への変換（Girsanov の定理）:
       dW^Q = dW^P + λdt
 
     Q測度下でのダイナミクス:
-      dT = [κ(θ(t) - T) - λσ]dt + σdW^Q
+      dT = dθ(t) + [κ(θ(t) - T) - λσ]dt + σdW^Q
 
     λσ は「リスクプレミアム項」。実質的にドリフトをシフトさせる効果がある。
 
-    Euler-Maruyama 離散化:
-      T_{n+1} = T_n + [κ(θ_n - T_n) - λσ]Δt + σ√(Δt) Z_n
+    パスの生成は simulate_temperature_paths に任せる
+    (dθ の項と Euler-Maruyama 離散化の説明もそちらにある)。
 
     Parameters
     ----------
@@ -213,26 +214,17 @@ def monte_carlo_pricing(
     n_paths : シミュレーションパス数
     seed : 乱数シード
     """
-    rng = np.random.default_rng(seed)
-    dt = 1.0
-
-    # 時間軸と季節成分を事前計算
-    t = np.arange(t_start, t_start + n_days, dtype=np.float64)
-    theta = seasonal.evaluate(t)
-
     # パスの生成（Q測度下）
-    paths = np.zeros((n_paths, n_days))
-    paths[:, 0] = T_initial
-
-    Z = rng.standard_normal((n_paths, n_days - 1))
-    kappa = ou.kappa
-    sigma = ou.sigma
-
-    for i in range(n_days - 1):
-        # Q測度ドリフト = κ(θ - T) - λσ
-        drift = (kappa * (theta[i] - paths[:, i]) - lambda_risk * sigma) * dt
-        diffusion = sigma * np.sqrt(dt) * Z[:, i]
-        paths[:, i + 1] = paths[:, i] + drift + diffusion
+    paths = simulate_temperature_paths(
+        seasonal,
+        ou,
+        t_start,
+        n_days,
+        n_paths=n_paths,
+        T_initial=T_initial,
+        seed=seed,
+        lambda_risk=lambda_risk,
+    )
 
     # 日次 HDD/CDD を計算
     if dd_type.lower() == "hdd":
